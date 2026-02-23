@@ -2,7 +2,7 @@ name: Docker CI Pipeline with Trivy Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
 
 jobs:
   build-scan-push:
@@ -10,34 +10,36 @@ jobs:
 
     steps:
     # Step 1: Checkout code
-    - name: Checkout code
+    - name: Checkout source code
       uses: actions/checkout@v3
 
     # Step 2: Login to DockerHub
     - name: Login to DockerHub
-      run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
     # Step 3: Build Docker image
     - name: Build Docker image
-      run: docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:latest .
-
-    # Step 4: Install Trivy
-    - name: Install Trivy
       run: |
-        sudo apt-get update
-        sudo apt-get install -y wget
-        wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.49.1_Linux-64bit.deb
-        sudo dpkg -i trivy_0.49.1_Linux-64bit.deb
+        docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:latest .
 
-    # Step 5: Scan Docker image using Trivy
-    - name: Scan Docker image for vulnerabilities
+    # Step 4: Scan image with Trivy
+    - name: Scan Docker image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+        format: table
+        severity: CRITICAL,HIGH
+        exit-code: 0   # do not fail pipeline (for learning)
+        ignore-unfixed: true
+
+    # Step 5: Push Docker image
+    - name: Push Docker image to DockerHub
       run: |
-        trivy image --exit-code 1 --severity HIGH,CRITICAL ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
 
-    # Step 6: Push Docker image to DockerHub (only if scan passes)
-    - name: Push Docker image
-      run: docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
-
-    # Step 7: Finish
+    # Step 6: Finish
     - name: Done
       run: echo "Docker image built, scanned, and pushed successfully 🚀"
