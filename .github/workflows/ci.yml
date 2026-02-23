@@ -1,11 +1,11 @@
-name: Docker CI Pipeline
+name: Docker CI Pipeline with Trivy Scan
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  build-and-push:
+  build-scan-push:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,10 +21,23 @@ jobs:
     - name: Build Docker image
       run: docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:latest .
 
-    # Step 4: Push Docker image to DockerHub
+    # Step 4: Install Trivy
+    - name: Install Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget
+        wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.49.1_Linux-64bit.deb
+        sudo dpkg -i trivy_0.49.1_Linux-64bit.deb
+
+    # Step 5: Scan Docker image using Trivy
+    - name: Scan Docker image for vulnerabilities
+      run: |
+        trivy image --exit-code 1 --severity HIGH,CRITICAL ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+
+    # Step 6: Push Docker image to DockerHub (only if scan passes)
     - name: Push Docker image
       run: docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
 
-    # Step 5: Finish
+    # Step 7: Finish
     - name: Done
-      run: echo "Docker image built and pushed successfully 🚀"
+      run: echo "Docker image built, scanned, and pushed successfully 🚀"
