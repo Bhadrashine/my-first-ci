@@ -76,4 +76,4 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
           git add trivy-report/report.html trivy-report/report.json
           git commit -m "Add Trivy scan reports [skip ci]" || echo "Nothing to commit"
-          git push origin HEAD:master
+          git push origin HEAD:main
