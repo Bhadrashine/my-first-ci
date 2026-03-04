@@ -1,5 +1,12 @@
-FROM python:3.9-slim
+FROM python:3.13-slim
+
 WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --upgrade wheel && \
+    pip install -r requirements.txt
+
 COPY . .
-RUN pip install flask
-CMD ["python","app.py"]
+
+CMD ["python", "app.py"]
