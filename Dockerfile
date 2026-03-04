@@ -1,4 +1,5 @@
 FROM python:3.9-slim
 WORKDIR /app
 COPY . .
-CMD ["python3", "--version"]
+RUN pip install flask
+CMD ["python","app.py"]
