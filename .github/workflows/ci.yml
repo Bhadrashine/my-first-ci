@@ -1,79 +1,116 @@
 name: CI Security + Kind Deployment
- 
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
- 
+
 jobs:
-  build-scan-push:
+  security-pipeline:
     runs-on: ubuntu-latest
- 
+
     steps:
-      - name: Checkout repo
+
+      # 1. CHECKOUT
+      - name: Checkout
         uses: actions/checkout@v3
         with:
           token: ${{ secrets.GH_TOKEN }}
- 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
- 
-      - name: Log in to Docker Hub
+
+      # 2. BUILD
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
- 
+
       - name: Build Docker image
-        run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest .
- 
-      - name: Create Trivy report directory
-        run: mkdir -p trivy-report
- 
-      - name: Download Trivy HTML template
+        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest .
+      # Download Trivy HTML template
+      - name: Download Trivy template
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.69.2/contrib/html.tpl \
-            -o trivy-report/html.tpl
- 
-      - name: Scan Docker image - HTML report
+            -o /tmp/html.tpl
+      # 3. TRIVY SCAN
+      - name: Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest
           format: template
-          template: "@trivy-report/html.tpl"
-          output: trivy-report/report.html
+          template: "@/tmp/html.tpl"
+          output: report.html
           severity: CRITICAL,HIGH
           exit-code: "0"
- 
-      - name: Scan Docker image - JSON report
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest
-          format: json
-          output: trivy-report/report.json
-          severity: CRITICAL,HIGH
-          exit-code: "0"
- 
-      - name: Push Docker image
+          ignore-unfixed: true
+
+      # 4. KUBESEC SCAN
+      - name: Install Kubesec
         run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest
- 
-      - name: Upload Trivy reports as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports
-          path: |
-            trivy-report/report.html
-            trivy-report/report.json
- 
- 
-      - name: Push Trivy reports to repo
+          wget -q https://github.com/controlplaneio/kubesec/releases/download/v2.14.0/kubesec_linux_amd64.tar.gz
+          tar -xzf kubesec_linux_amd64.tar.gz && sudo mv kubesec /usr/local/bin/
+          sudo apt-get install -y jq
+
+      - name: Kubesec scan
+        run: |
+          kubesec scan k8s/deployment.yaml | tee kubesec.json
+          score=$(cat kubesec.json | jq -r '.[0].score // 0')
+          echo "Score: $score"
+          [ "$score" -lt 0 ] && exit 1 || echo "Kubesec passed"
+
+      # 5. CIS BENCHMARK
+      - name: CIS Benchmark
+        run: |
+          FAIL=0
+          grep -q "privileged: true"  k8s/deployment.yaml && echo "FAIL CIS 5.2.1 Privileged" && FAIL=1
+          grep -q "hostPID: true"     k8s/deployment.yaml && echo "FAIL CIS 5.2.2 hostPID" && FAIL=1
+          grep -q "hostNetwork: true" k8s/deployment.yaml && echo "FAIL CIS 5.2.3 hostNetwork" && FAIL=1
+          grep -q "limits:"           k8s/deployment.yaml || { echo "FAIL CIS 5.4.1 No resource limits" && FAIL=1; }
+          [ "$FAIL" -gt 0 ] && exit 1 || echo "All CIS checks passed"
+
+      # 6. KIND CLUSTER
+      - name: Install Kind and kubectl
+        run: |
+          # Install Kind
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo install -o root -g root -m 0755 ./kind /usr/local/bin/kind
+          kind --version
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Deploy to Kind
+        run: |
+          kind create cluster --name myapp-test --wait 60s
+          docker tag ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest task4-part1:latest
+          kind load docker-image task4-part1:latest --name myapp-test
+          kubectl apply -f k8s/
+          
+          # Wait and show what's happening
+          sleep 30
+          echo "=== PODS ===" && kubectl get pods
+          echo "=== DESCRIBE ===" && kubectl describe pods
+          echo "=== LOGS ===" && kubectl logs -l app=myapp --tail=50 || true
+          
+          kubectl rollout status deployment/myapp --timeout=180s
+          kind delete cluster --name myapp-test
+
+      # 7. PUSH IMAGE
+      - name: Push Docker image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/task4-part1:latest
+
+      # 8. PUSH REPORT TO REPO
+      - name: Push report to repo
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
-          git add trivy-report/report.html trivy-report/report.json
-          git commit -m "Add Trivy scan reports [skip ci]" || echo "Nothing to commit"
+          git pull origin main
+          git add report.html kubesec.json
+          git commit -m "Add security reports [skip ci]" || echo "Nothing to commit"
           git push origin HEAD:main
